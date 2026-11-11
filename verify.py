@@ -1,7 +1,7 @@
 """요약 세션이 끝난 뒤 사람이 돌리는 최종 확인. 작업 폴더의 검사기와 예시 계약서는 믿지 않는다.
 
-    python verify.py <믿는 커밋> <v1> <v2> out/<이름>
-    예: python verify.py 1a2b3c4 samples/용역계약_v1.docx samples/용역계약_v2.docx out/용역계약
+    python verify.py <믿는 커밋(40자리)> <v1> <v2> out/<이름>
+    예: python verify.py $(git rev-parse HEAD) samples/용역계약_v1.docx samples/용역계약_v2.docx out/용역계약
 
 1. 이 저장소를 임시 폴더에 새로 받아 <믿는 커밋>을 꺼낸다(작업 폴더의 git 훅·설정은 타지 않는다).
 2. 작업 폴더 파일(out/ 말고 전부: diff.py·check.py·samples/·.claude/ …)이 그 커밋과 다르거나 새 파일이 있으면 실패.
@@ -12,6 +12,7 @@
 <믿는 커밋>은 세션이 바꿀 수 없는 곳에서 가져온다: 내가 적어 둔 해시, 또는 GitHub 에 올린 뒤라면 원격의 해시.
 """
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -39,6 +40,8 @@ def no_links(p: Path):
 
 def main(commit, v1, v2, out_dir):
     sys.stdout.reconfigure(encoding="utf-8")
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        sys.exit("✗ 믿는 커밋은 40자리 전체 해시로 준다(짧은 해시·태그·브랜치 이름은 받지 않는다)")
     paths = [Path(os.path.abspath(p)) for p in (v1, v2, out_dir)]
     out = paths[2]
     for p in [*paths, out / "summary.json"]:
@@ -47,8 +50,10 @@ def main(commit, v1, v2, out_dir):
         sys.exit("✗ 결과 폴더는 이 저장소의 out/ 안이어야 한다")
     with tempfile.TemporaryDirectory() as tmp:
         clean = Path(tmp) / "repo"
-        r = run("git", "-c", "core.hooksPath=", "clone", "-q", "--no-hardlinks", "--no-checkout", str(HERE), str(clean), cwd=tmp)
-        r = r.returncode == 0 and run("git", "-c", "core.hooksPath=", "checkout", "-q", commit, cwd=clean)
+        # 믿는 커밋은 40자리 전체 해시만. 짧은 해시·태그·브랜치 이름은 세션이 같은 이름의 ref 를 만들어 가로챌 수 있다
+        r = run("git", "-c", "core.hooksPath=", "clone", "-q", "--no-hardlinks", "--no-checkout", "--no-tags", str(HERE), str(clean), cwd=tmp)
+        got = r.returncode == 0 and run("git", "rev-parse", "--verify", "-q", f"{commit}^{{commit}}", cwd=clean).stdout.strip()
+        r = got == commit and run("git", "-c", "core.hooksPath=", "checkout", "-q", "--detach", commit, cwd=clean)
         if not r or r.returncode:
             sys.exit(f"✗ 커밋 {commit} 을 꺼내지 못했다")
         tracked = set(run("git", "-c", "core.quotepath=false", "ls-files", cwd=clean).stdout.splitlines())
@@ -69,7 +74,10 @@ def main(commit, v1, v2, out_dir):
         dst = clean / "out" / out.name
         dst.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(out / "summary.json", dst / "summary.json")
-        py = [sys.executable, "-E"]   # PYTHONPATH 같은 환경변수로 끼어드는 코드를 막는다
+        # -E: PYTHONPATH 같은 환경변수로 끼어드는 코드를 막는다. -s·-I 는 안 쓴다(python-docx 가 사용자 site-packages 에 있음).
+        # 한계: 세션은 같은 Windows 사용자로 돈다. 사용자 site-packages·python.exe 를 고칠 수 있는 세션이면
+        # 어떤 플래그로도 못 막는다 — 그 수준은 세션을 다른 계정·샌드박스에서 돌려서 막을 일이다
+        py = [sys.executable, "-E"]
         ok = subprocess.run([*py, "test_check.py"], cwd=clean).returncode == 0
         ok = subprocess.run([*py, "check.py", *ins, f"out/{out.name}"], cwd=clean).returncode == 0 and ok
         if ok:

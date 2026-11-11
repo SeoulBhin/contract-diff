@@ -12,12 +12,31 @@ diff 는 out/ 의 diff.json 을 쓰지 않고 원본 두 파일로 다시 계산
 미검토(오류 아님) — 어디에도 안 들어간 hunk 는 보고서 맨 위에 원문 그대로 올린다
 """
 import json
+import re
 import sys
 from pathlib import Path
 
 from diff import changed_spans, diff, norm, numbers
 
 RISKS = ("높음", "중간", "낮음")
+# 한글로 쓴 숫자("육십일", "두 배")는 숫자 검사를 빠져나간다 → 요약·이유에서 받지 않고 아라비아 숫자를 쓰게 한다
+KO_NUM = re.compile(r"[이삼사오육칠팔구][십백천]|[십백천][일이삼사오육칠팔구]|(?<![가-힣])(?:한|두|세|네|다섯|여섯|일곱|여덟|아홉|열)\s*(?:배|달|해|시간|번)")
+MD_START = tuple("#->*|`=+[<")   # 보고서 구조(제목·목록·인용·표)를 흉내 낼 수 있는 시작 글자
+
+
+def text_errors(tag, name, v, cap):
+    """보고서에 그대로 들어가는 세션 글(요약·이유). 줄바꿈·마크다운 시작 글자·길이·한글 숫자."""
+    v = str(v or "")
+    e = []
+    if "\n" in v or "\r" in v:
+        e.append(f"{tag}: {name} 에 줄바꿈이 있다(한 줄로)")
+    if v.strip().startswith(MD_START):
+        e.append(f"{tag}: {name} 이 마크다운 기호로 시작한다")
+    if len(v) > cap:
+        e.append(f"{tag}: {name} 이 {cap}자를 넘는다")
+    if KO_NUM.search(v):
+        e.append(f"{tag}: {name} 에 한글로 쓴 숫자 {KO_NUM.search(v)[0]!r} — 아라비아 숫자로, 인용에 있는 숫자만")
+    return e
 
 
 def overlaps(text, quote, spans):
@@ -52,12 +71,16 @@ def review(d, s):
             errors.append(f"{tag}: risk 는 {'/'.join(RISKS)} 중 하나: {it.get('risk')!r}")
         if not str(it.get("summary") or "").strip():
             errors.append(f"{tag}: summary 가 비었다")
+        errors += text_errors(tag, "summary", it.get("summary"), 300)
         q = {}
         for side, txt in (("before", "old"), ("after", "new")):
             v = it.get(side)
             if v is None:
                 if any(hunks[i][txt] for i in ids):
                     errors.append(f"{tag}: {side} 가 null 인데 {'옛' if txt == 'old' else '새'} 글이 있는 hunk 다")
+                continue
+            if isinstance(v, str) and ("\n" in v or "\r" in v):
+                errors.append(f"{tag}: {side} 에 줄바꿈이 있다 — 한 문단 안의 이어진 구간만 인용한다")
                 continue
             if not isinstance(v, str) or not norm(v):
                 errors.append(f"{tag}: {side} 는 원문 문자열 또는 null")
@@ -95,6 +118,7 @@ def review(d, s):
             errors.append(f"표현만 바뀜: {i} 는 조항 추가·삭제다 — 변경 항목으로 써야 한다")
         if i in covered:
             errors.append(f"표현만 바뀜: {i} 는 변경 항목 {covered[i]} 에도 있다 — 한쪽만")
+        errors += text_errors(f"표현만 바뀜 {i}", "why", w.get("why"), 120)
         wording.append((h, str(w.get("why") or "")))
     for i, qs in quoted.items():
         h = hunks[i]
@@ -108,7 +132,8 @@ def review(d, s):
 
 
 def block(h):
-    return f"- 전: {h['old'] or '(없음)'}\n- 후: {h['new'] or '(없음)'}".replace("\n", "\n  ")
+    side = lambda t: " ¶ ".join(t.split("\n")) if t else "(없음)"   # 문단 경계는 ¶ — 원문 줄바꿈으로 보고서 구조를 못 만든다
+    return f"- 전: {side(h['old'])}\n- 후: {side(h['new'])}"
 
 
 def report(d, items, wording, unreviewed):
@@ -124,7 +149,7 @@ def report(d, items, wording, unreviewed):
     L += ["## 변경 항목", ""]
     for it in sorted(items, key=lambda it: RISKS.index(it["risk"])):
         L += [f"### [{it['risk']}] {' · '.join(hunks[i]['clause'] for i in it['hunks'])} ({', '.join(it['hunks'])})", "",
-              it["summary"].strip(), "", f"- 전: {it.get('before') or '(없음)'}", f"- 후: {it.get('after') or '(없음)'}", ""]
+              it["summary"].strip(), "", f"- 전: {norm(it['before']) if it.get('before') else '(없음)'}", f"- 후: {norm(it['after']) if it.get('after') else '(없음)'}", ""]
     if wording:
         L += ["## 표현만 바뀜 — 원문 그대로 둔다, 뜻이 바뀌지 않았는지 눈으로 확인", ""]
         for h, why in wording:
