@@ -11,27 +11,42 @@ diff 는 out/ 의 diff.json 을 쓰지 않고 원본 두 파일로 다시 계산
   - 없는 hunk 번호, 위험도 값, 칸 빠짐
 미검토(오류 아님) — 어디에도 안 들어간 hunk 는 보고서 맨 위에 원문 그대로 올린다
 """
+import html
 import json
 import re
 import sys
+import unicodedata
 from pathlib import Path
 
 from diff import changed_spans, diff, norm, numbers
 
 RISKS = ("높음", "중간", "낮음")
-# 한글로 쓴 숫자("육십일", "두 배")는 숫자 검사를 빠져나간다 → 요약·이유에서 받지 않고 아라비아 숫자를 쓰게 한다
-KO_NUM = re.compile(r"[이삼사오육칠팔구][십백천]|[십백천][일이삼사오육칠팔구]|(?<![가-힣])(?:한|두|세|네|다섯|여섯|일곱|여덟|아홉|열)\s*(?:배|달|해|시간|번)")
-MD_START = tuple("#->*|`=+[<")   # 보고서 구조(제목·목록·인용·표)를 흉내 낼 수 있는 시작 글자
+# 숫자 검사가 보장하는 건 아라비아 숫자뿐이다. 글자로 쓴 숫자("육십일", "두 배", "六十")는 흔한 꼴만 잡는다(최선 노력).
+# ponytail: 고유어 수사("서른") 등은 못 잡는다 — 보장이 필요하면 형태소 분석기로
+KO_NUM = re.compile(r"[일이삼사오육칠팔구십백천만억]+(?:일|개월|년|시간|분의|퍼센트|원|배|주|회)"
+                    r"|(?<![가-힣])(?:한|두|세|네|다섯|여섯|일곱|여덟|아홉|열)\s*(?:배|달|해|시간|번)")
+MD_META = re.compile(r"([\\`*_\[\]()#+\-!|~{}])")
+
+
+def other_numeral(v):
+    """아라비아 숫자가 아닌데 숫자 값이 있는 글자(한자 숫자·전각 숫자 등). ①~⑳ 은 항 표시라 뺀다."""
+    return next((c for c in v if not ("0" <= c <= "9") and not ("①" <= c <= "⑳")
+                 and unicodedata.numeric(c, None) is not None), None)
+
+
+def esc(t):
+    """세션·계약서 글을 보고서에 넣을 때: HTML 은 & < > 를, 마크다운 기호는 \\ 로 막는다. 줄바꿈은 따로 거부·치환."""
+    return MD_META.sub(r"\\\1", html.escape(str(t), quote=False))
 
 
 def text_errors(tag, name, v, cap):
-    """보고서에 그대로 들어가는 세션 글(요약·이유). 줄바꿈·마크다운 시작 글자·길이·한글 숫자."""
+    """보고서에 들어가는 세션 글(요약·이유). 줄바꿈·길이·글자로 쓴 숫자."""
     v = str(v or "")
     e = []
     if "\n" in v or "\r" in v:
         e.append(f"{tag}: {name} 에 줄바꿈이 있다(한 줄로)")
-    if v.strip().startswith(MD_START):
-        e.append(f"{tag}: {name} 이 마크다운 기호로 시작한다")
+    if other_numeral(v):
+        e.append(f"{tag}: {name} 에 아라비아 숫자가 아닌 숫자 {other_numeral(v)!r} — 0~9 로")
     if len(v) > cap:
         e.append(f"{tag}: {name} 이 {cap}자를 넘는다")
     if KO_NUM.search(v):
@@ -132,32 +147,34 @@ def review(d, s):
 
 
 def block(h):
-    side = lambda t: " ¶ ".join(t.split("\n")) if t else "(없음)"   # 문단 경계는 ¶ — 원문 줄바꿈으로 보고서 구조를 못 만든다
-    return f"- 전: {side(h['old'])}\n- 후: {side(h['new'])}"
+    side = lambda t: " ¶ ".join(esc(x) for x in t.split(chr(10))) if t else "(없음)"   # 문단 경계는 ¶
+    return f"- 전: {side(h['old'])}" + chr(10) + f"- 후: {side(h['new'])}"
 
 
 def report(d, items, wording, unreviewed):
+    """세션 글(요약·이유·인용)과 계약서 글(조항 이름·원문)은 전부 esc() 를 거친다 — 보고서 구조를 못 만든다."""
     hunks = {h["id"]: h for h in d["hunks"]}
     cnt = {r: sum(1 for it in items if it["risk"] == r) for r in RISKS}
-    L = [f"# 변경점: {Path(d['v1']).name} → {Path(d['v2']).name}", "",
+    q = lambda v: esc(norm(v)) if v else "(없음)"
+    L = [f"# 변경점: {esc(Path(d['v1']).name)} → {esc(Path(d['v2']).name)}", "",
          f"미검토 {len(unreviewed)}건 · 변경 항목 {len(items)}건(높음 {cnt['높음']} / 중간 {cnt['중간']} / 낮음 {cnt['낮음']}) · "
          f"표현만 바뀜 {len(wording)}건 · 번호만 바뀐 조항 {len(d['renumbered'])}개", ""]
     if unreviewed:
         L += ["## 미검토 — 요약에 없는 변경, 직접 읽어야 한다", ""]
         for h in unreviewed:
-            L += [f"### {h['id']} {h['clause']}", block(h), ""]
+            L += [f"### {h['id']} {esc(h['clause'])}", block(h), ""]
     L += ["## 변경 항목", ""]
     for it in sorted(items, key=lambda it: RISKS.index(it["risk"])):
-        L += [f"### [{it['risk']}] {' · '.join(hunks[i]['clause'] for i in it['hunks'])} ({', '.join(it['hunks'])})", "",
-              it["summary"].strip(), "", f"- 전: {norm(it['before']) if it.get('before') else '(없음)'}", f"- 후: {norm(it['after']) if it.get('after') else '(없음)'}", ""]
+        L += [f"### [{it['risk']}] {' · '.join(esc(hunks[i]['clause']) for i in it['hunks'])} ({', '.join(it['hunks'])})", "",
+              f"요약: {esc(it['summary'].strip())}", "", f"- 전: {q(it.get('before'))}", f"- 후: {q(it.get('after'))}", ""]
     if wording:
         L += ["## 표현만 바뀜 — 원문 그대로 둔다, 뜻이 바뀌지 않았는지 눈으로 확인", ""]
         for h, why in wording:
-            L += [f"### {h['id']} {h['clause']}: {why}", block(h), ""]
+            L += [f"### {h['id']} {esc(h['clause'])}: {esc(why)}", block(h), ""]
     if d["renumbered"]:
         L += ["## 번호만 바뀐 조항 (내용 같음)", ""]
-        L += [f"- {m['title']}: 제{m['old_no']}조 → 제{m['new_no']}조" for m in d["renumbered"]] + [""]
-    return "\n".join(L)
+        L += [f"- {esc(m['title'])}: 제{m['old_no']}조 → 제{m['new_no']}조" for m in d["renumbered"]] + [""]
+    return chr(10).join(L)
 
 
 def main(v1, v2, out_dir):

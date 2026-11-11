@@ -50,9 +50,16 @@ def main(commit, v1, v2, out_dir):
         sys.exit("✗ 결과 폴더는 이 저장소의 out/ 안이어야 한다")
     with tempfile.TemporaryDirectory() as tmp:
         clean = Path(tmp) / "repo"
-        # 믿는 커밋은 40자리 전체 해시만. 짧은 해시·태그·브랜치 이름은 세션이 같은 이름의 ref 를 만들어 가로챌 수 있다
-        r = run("git", "-c", "core.hooksPath=", "clone", "-q", "--no-hardlinks", "--no-checkout", "--no-tags", str(HERE), str(clean), cwd=tmp)
-        got = r.returncode == 0 and run("git", "rev-parse", "--verify", "-q", f"{commit}^{{commit}}", cwd=clean).stdout.strip()
+        # 믿는 커밋은 40자리 전체 해시만. 짧은 해시·태그·브랜치 이름은 세션이 같은 이름의 ref 를 만들어 가로챌 수 있다.
+        # 이 로컬 저장소의 객체 저장소도 세션이 쓸 수 있다 → 객체를 파일 복사 말고 전송으로 받고(--no-local) 받을 때·받은 뒤
+        # fsck 로 깨진·위조 객체를 거른다. alternates(다른 객체 저장소 빌려 쓰기)가 있으면 멈춘다.
+        # 더 강한 기준은 GitHub 에 올린 뒤 원격에서 받는 것(3편 verify 와 같은 방식) — 그때는 원격 주소로 바꾼다
+        if (HERE / ".git" / "objects" / "info" / "alternates").exists():
+            sys.exit("✗ .git/objects/info/alternates 가 있다(다른 객체 저장소를 끌어다 쓴다) — 멈춘다")
+        r = run("git", "-c", "core.hooksPath=", "-c", "transfer.fsckObjects=true", "clone", "-q", "--no-local", "--no-checkout",
+                "--no-tags", str(HERE), str(clean), cwd=tmp)
+        r = r.returncode == 0 and run("git", "fsck", "--full", "--strict", cwd=clean).returncode == 0
+        got = r and run("git", "rev-parse", "--verify", "-q", f"{commit}^{{commit}}", cwd=clean).stdout.strip()
         r = got == commit and run("git", "-c", "core.hooksPath=", "checkout", "-q", "--detach", commit, cwd=clean)
         if not r or r.returncode:
             sys.exit(f"✗ 커밋 {commit} 을 꺼내지 못했다")

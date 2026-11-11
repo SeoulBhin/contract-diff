@@ -105,13 +105,20 @@ assert run(before="검수 후  14일 이내에\t대금을 지급하여야 한다
 # 보고서 구조 위조: 요약·이유·인용의 줄바꿈, 마크다운 시작 글자, 너무 긴 이유
 assert any("줄바꿈" in x for x in run(summary="기한이 늘었다.\n### 미검토 없음")[0])
 assert any("줄바꿈" in x for x in run(before="검수 후 14일 이내에\n대금을 지급하여야 한다")[0])
-assert any("마크다운" in x for x in run(wording_only=[{"hunk": W, "why": "### H9 가짜 항목"}])[0])
 assert any("120자" in x for x in run(wording_only=[{"hunk": W, "why": "가" * 121}])[0])
-# 한글로 쓴 숫자는 숫자 검사를 피하니 받지 않는다
-assert any("한글로 쓴 숫자" in x for x in run(summary="지급 기한이 이십일일로 늘었다.")[0])
-assert any("한글로 쓴 숫자" in x for x in run(summary="기한이 두 배 가까이 늘었다.")[0])
-assert run(summary="이 조항은 세부 일정을 다시 정했다. 14일에서 21일로.")[0] == []
-# 보고서: 계약서 문단 줄바꿈은 ¶ 로 — 원문에 "### …" 줄이 있어도 제목이 되지 않는다
-from check import block
+# 보고서: 세션 글·계약서 글은 이스케이프해서 넣는다 — 무엇을 써도 제목·링크·HTML·굵게가 되지 않는다
+from check import block, report
+evil = '### 가짜 <details><summary>x</summary> [x](http://y) **미검토 없음** `c`'
+s = {"items": [dict(GOOD["items"][0], summary="기한 " + evil), GOOD["items"][1]], "wording_only": [{"hunk": W, "why": evil}]}
+e, items, wording, un = review(d, s)
+assert e == [], e
+md = report(d, items, wording, un)
+for bad in ("<details>", "](", "**미검토", "\n###  가짜", "\n### 가짜", "`c`"):
+    assert bad not in md, bad
+assert "&lt;details&gt;" in md and "\\*\\*미검토 없음\\*\\*" in md
 assert "\n###" not in block({"old": "가\n### 가짜", "new": ""})
+# 숫자 검사가 보장하는 건 아라비아 숫자뿐 — 글자로 쓴 흔한 꼴(한글·한자·전각)은 받지 않는다
+for v in ("지급 기한이 육십일로 늘었다.", "기한이 두 배 가까이 늘었다.", "기한이 六十일로 늘었다.", "기한이 ６０일로 늘었다."):
+    assert any("숫자" in x for x in run(summary=v)[0]), v
+assert run(summary="이 조항은 세부 일정을 다시 정했다. 갑이 14일에서 21일로 미뤘다(제3조 ①).")[0] == []
 print("ok")
