@@ -51,7 +51,7 @@ def main(commit, v1, v2, out_dir):
         r = r.returncode == 0 and run("git", "-c", "core.hooksPath=", "checkout", "-q", commit, cwd=clean)
         if not r or r.returncode:
             sys.exit(f"✗ 커밋 {commit} 을 꺼내지 못했다")
-        tracked = set(run("git", "ls-files", cwd=clean).stdout.splitlines())
+        tracked = set(run("git", "-c", "core.quotepath=false", "ls-files", cwd=clean).stdout.splitlines())
         changed = []
         for p in HERE.rglob("*"):
             rel = p.relative_to(HERE).as_posix()
