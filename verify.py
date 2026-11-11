@@ -1,7 +1,7 @@
 """요약 세션이 끝난 뒤 사람이 돌리는 최종 확인. 작업 폴더의 검사기와 예시 계약서는 믿지 않는다.
 
     python verify.py <믿는 커밋(40자리)> <v1> <v2> out/<이름>
-    예: python verify.py $(git rev-parse HEAD) samples/용역계약_v1.docx samples/용역계약_v2.docx out/용역계약
+    예: python verify.py <세션 전에 적어 둔 40자리 해시> samples/용역계약_v1.docx samples/용역계약_v2.docx out/용역계약
 
 1. 이 저장소를 임시 폴더에 새로 받아 <믿는 커밋>을 꺼낸다(작업 폴더의 git 훅·설정은 타지 않는다).
 2. 작업 폴더 파일(out/ 말고 전부: diff.py·check.py·samples/·.claude/ …)이 그 커밋과 다르거나 새 파일이 있으면 실패.
